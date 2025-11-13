@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Scan Warna Kulit & Rekomendasi Makeup</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
+    body{display:flex;gap:20px;align-items:flex-start;padding:20px;background:#f5f7fb;color:#111;flex-wrap:wrap}
+    .card{background:#fff;border-radius:12px;box-shadow:0 6px 18px rgba(15,23,42,.08);padding:16px;width:520px;max-width:100%}
+    video{border-radius:10px;width:100%;height:auto;background:#000}
+    canvas{display:none}
+    .controls{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+    button{padding:8px 12px;border-radius:8px;border:1px solid #ddd;background:#fafafa;cursor:pointer}
+    button.primary{background:#2563eb;color:#fff;border:none}
+    .result{flex:1;min-width:280px}
+    .swatch{width:120px;height:120px;border-radius:8px;border:1px solid #ddd}
+    .info{margin-top:8px}
+    .small{font-size:13px;color:#555}
+    .note{font-size:13px;color:#666;margin-top:8px}
+    .face-box{position:absolute;border:2px dashed rgba(255,255,255,.9);pointer-events:none}
+    .video-wrap{position:relative}
+    .rekomendasi{margin-top:16px;padding-top:10px;border-top:1px solid #eee}
+    ul{padding-left:18px;margin-top:8px}
+    a.toko{display:inline-block;margin-top:4px;background:#2563eb;color:#fff;padding:5px 10px;border-radius:6px;text-decoration:none;font-size:13px}
+    select{margin-top:6px;padding:4px;border-radius:6px;border:1px solid #ccc;}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Scan Warna Kulit Wajah</h2>
+    <p class="small">Aplikasi sederhana untuk mengambil sampel warna kulit dari kamera dan memberi rekomendasi skincare serta makeup.</p>
+
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <div id="faceBox" class="face-box"></div>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn" class="primary">Mulai Kamera</button>
+      <button id="scanBtn">Scan Warna Kulit</button>
+      <button id="pauseBtn">Hentikan Kamera</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+    <p class="note">Catatan: kalau browser tidak mendukung <code>FaceDetector</code>, sistem akan mengambil sampel dari area tengah video.</p>
+  </div>
+
+  <div class="card result">
+    <h3>Hasil</h3>
+    <div class="swatch" id="swatch"></div>
+    <div class="info">
+      <p><strong>Hex:</strong> <span id="hex">—</span></p>
+      <p><strong>RGB:</strong> <span id="rgb">—</span></p>
+      <p><strong>Tipe Kulit:</strong> <span id="name">—</span></p>
+      <p class="small"><strong>Metode:</strong> <span id="method">—</span></p>
+    </div>
+
+    <div class="rekomendasi">
+      <h3>Rekomendasi Perawatan</h3>
+      <label>Pilih jenis kulit: </label>
+      <select id="jenisKulit">
+        <option value="normal">Normal</option>
+        <option value="kering">Kering</option>
+        <option value="berminyak">Berminyak</option>
+        <option value="kombinasi">Kombinasi</option>
+      </select>
+      <div id="rekomendasiToner"></div>
+      <div id="rekomendasiMakeup"></div>
+      <div id="rekomendasiTambahan"></div>
+    </div>
+  </div>
+
+  <script>
+    const video=document.getElementById('video');
+    const startBtn=document.getElementById('startBtn');
+    const pauseBtn=document.getElementById('pauseBtn');
+    const scanBtn=document.getElementById('scanBtn');
+    const canvas=document.getElementById('canvas');
+    const swatch=document.getElementById('swatch');
+    const hexEl=document.getElementById('hex');
+    const rgbEl=document.getElementById('rgb');
+    const nameEl=document.getElementById('name');
+    const methodEl=document.getElementById('method');
+    const faceBox=document.getElementById('faceBox');
+    const tonerBox=document.getElementById('rekomendasiToner');
+    const makeupBox=document.getElementById('rekomendasiMakeup');
+    const tambahanBox=document.getElementById('rekomendasiTambahan');
+    const jenisKulit=document.getElementById('jenisKulit');
+
+    let stream=null;
+
+    async function startCamera(){
+      try{
+        stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});
+        video.srcObject=stream;
+        await video.play();
+        canvas.width=video.videoWidth||640;
+        canvas.height=video.videoHeight||480;
+        faceBox.style.display='none';
+      }catch(e){alert('Gagal mengakses kamera: '+e.message);}
+    }
+
+    function stopCamera(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+
+    function averageColorInRect(ctx,x,y,w,h,step=3){
+      const img=ctx.getImageData(Math.max(0,x),Math.max(0,y),Math.max(1,w),Math.max(1,h));
+      let r=0,g=0,b=0,count=0;
+      for(let i=0;i<img.data.length;i+=4*step){r+=img.data[i];g+=img.data[i+1];b+=img.data[i+2];count++;}
+      return {r:Math.round(r/count),g:Math.round(g/count),b:Math.round(b/count)};
+    }
+
+    function rgbToHex({r,g,b}){return '#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('').toUpperCase();}
+
+    // Warna kulit dengan standar sedikit diturunkan (lebih realistis gelap)
+    const SKIN_PALETTE=[
+      {name:'Sangat Terang (Fitzpatrick I)',rgb:[250,220,185]},
+      {name:'Terang (Fitzpatrick II)',rgb:[235,190,150]},
+      {name:'Coklat Muda (Fitzpatrick III)',rgb:[210,160,110]},
+      {name:'Coklat Sedang (Fitzpatrick IV)',rgb:[175,120,65]},
+      {name:'Coklat Gelap (Fitzpatrick V)',rgb:[115,70,35]},
+      {name:'Sangat Gelap (Fitzpatrick VI)',rgb:[65,45,30]}
+    ];
+
+    function distanceRgb(a,b){return Math.sqrt((a.r-b[0])**2+(a.g-b[1])**2+(a.b-b[2])**2);}
+
+    function nearestSkinName(rgb){let best=null;let dist=1e9;for(const p of SKIN_PALETTE){const d=distanceRgb(rgb,p.rgb);if(d<dist){dist=d;best=p}}return best.name;}
+
+    const rekomendasiData={
+      'Sangat Terang (Fitzpatrick I)':{
+        toner:['Toner lembut tanpa alkohol','Hydrating toner hyaluronic acid'],
+        makeup:['Foundation porcelain','Bedak translucent','Blush pink lembut']
+      },
+      'Terang (Fitzpatrick II)':{
+        toner:['Toner vitamin C ringan','Toner chamomile'],
+        makeup:['Foundation ivory','Bedak beige natural','Lip tint peach']
+      },
+      'Coklat Muda (Fitzpatrick III)':{
+        toner:['Toner niacinamide','Toner exfoliating mild AHA'],
+        makeup:['Foundation warm nude','Bedak honey beige','Blush coral']
+      },
+      'Coklat Sedang (Fitzpatrick IV)':{
+        toner:['Toner aloe vera','Toner witch hazel ringan'],
+        makeup:['Foundation golden tan','Bedak caramel','Lipstick terracotta']
+      },
+      'Coklat Gelap (Fitzpatrick V)':{
+        toner:['Toner vitamin E','Toner pelembap glycerin'],
+        makeup:['Foundation mocha','Bedak deep tan','Highlighter gold']
+      },
+      'Sangat Gelap (Fitzpatrick VI)':{
+        toner:['Toner oat extract','Toner tanpa parfum'],
+        makeup:['Foundation espresso','Bedak cocoa','Lipstick berry']
+      }
+    };
+
+    const tambahanData={
+      normal:['Gunakan sunscreen SPF 30+','Tambahkan pelembap ringan','Gunakan serum vitamin C'],
+      kering:['Gunakan moisturizer tebal','Hindari alkohol','Tambahkan hydrating serum'],
+      berminyak:['Gunakan toner oil control','Gunakan clay mask seminggu sekali','Gunakan moisturizer gel-based'],
+      kombinasi:['Gunakan dua jenis toner sesuai zona','Moisturizer ringan','Gunakan blotting paper jika berminyak']
+    };
+
+    async function detectFaceAndSample(){
+      const ctx=canvas.getContext('2d');
+      canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+      ctx.drawImage(video,0,0,canvas.width,canvas.height);
+      if('FaceDetector' in window){
+        try{
+          const fd=new FaceDetector({fastMode:true,maxDetectedFaces:1});
+          const faces=await fd.detect(canvas);
+          if(faces.length>0){
+            const f=faces[0].boundingBox;
+            faceBox.style.display='block';
+            faceBox.style.left=f.x+'px';faceBox.style.top=f.y+'px';faceBox.style.width=f.width+'px';faceBox.style.height=f.height+'px';
+            const padW=Math.round(f.width*0.35),padH=Math.round(f.height*0.25);
+            const sampleX=Math.round(f.x+(f.width-padW)/2);
+            const sampleY=Math.round(f.y+(f.height-padH)/2);
+            const avg=averageColorInRect(ctx,sampleX,sampleY,padW,padH,4);
+            methodEl.textContent='FaceDetector (otomatis)';
+            return avg;
+          }
+        }catch(e){console.warn('FaceDetector error:',e);}
+      }
+      faceBox.style.display='none';
+      const w=Math.round(canvas.width*0.2),h=Math.round(canvas.height*0.15),x=Math.round((canvas.width-w)/2),y=Math.round((canvas.height-h)/2);
+      const avg=averageColorInRect(ctx,x,y,w,h,4);
+      methodEl.textContent='Fallback (area tengah video)';
+      return avg;
+    }
+
+    scanBtn.addEventListener('click',async()=>{
+      if(!stream){alert('Silakan mulai kamera terlebih dahulu.');return;}
+      const avg=await detectFaceAndSample();
+      const hex=rgbToHex(avg);
+      const name=nearestSkinName(avg);
+      swatch.style.background=hex;
+      hexEl.textContent=hex;
+      rgbEl.textContent=`${avg.r}, ${avg.g}, ${avg.b}`;
+      nameEl.textContent=name;
+      const r=rekomendasiData[name];
+      const tipe=jenisKulit.value;  
+      if(r){
+        tonerBox.innerHTML=`<h4>Toner:</h4><ul>${r.toner.map(i=>`<li>${i}</li>`).join('')}</ul><a class='toko' href='https://shopee.co.id/search?keyword=toner%20${encodeURIComponent(name)}' target='_blank'>Lihat Produk</a>`;
+        makeupBox.innerHTML=`<h4>Makeup:</h4><ul>${r.makeup.map(i=>`<li>${i}</li>`).join('')}</ul><a class='toko' href='https://tokopedia.com/search?st=product&q=foundation%20${encodeURIComponent(name)}' target='_blank'>Cari di Tokopedia</a>`;
+        tambahanBox.innerHTML=`<h4>Saran Skincare Tambahan (${tipe}):</h4><ul>${tambahanData[tipe].map(i=>`<li>${i}</li>`).join('')}</ul>`;
+      } else {
+        tonerBox.innerHTML='<p>Tidak ada rekomendasi khusus.</p>';
+        makeupBox.innerHTML='';
+        tambahanBox.innerHTML='';
+      }
+    });
+
+    startBtn.addEventListener('click',startCamera);
+    pauseBtn.addEventListener('click',()=>{stopCamera();video.srcObject=null;faceBox.style.display='none';});
+  </script>
+</body>
+</html>
